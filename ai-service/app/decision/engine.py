@@ -12,8 +12,9 @@
 # Owner: Arpit (Person 1)
 # =============================================================================
 
-import uuid
+import asyncio
 import time
+import uuid
 
 from app.core.interfaces import (
     VisionProvider,
@@ -30,6 +31,10 @@ from app.contracts.analysis import (
     AnalysisMetadata,
     IssueInfo,
 )
+from app.contracts.location import LocationResult
+from app.contracts.authority import AuthorityResult
+from app.contracts.duplicate import DuplicateResult
+from app.contracts.complaint import ComplaintResult
 from app.core.logging import get_logger
 from app.core.errors import AIServiceError
 
@@ -75,20 +80,36 @@ class DecisionEngine:
         """
         Run the full AI analysis pipeline.
 
-        Phase 1: Calls all mock providers in sequence.
-        Phase 5+: Will include real orchestration, validation,
-                  error recovery, and partial-result handling.
+        Execution Flow:
+        1. Image Intelligence (Vision): validate image and detect civic issues.
+           - Short-circuit immediately if no civic issue is detected.
+        2. Severity Engine: calculate severity score and level.
+        3. Concurrent Phase (independent tasks):
+           - Location Resolution (LocationProvider)
+           - RAG Retrieval (RAGProvider)
+           - Duplicate Detection (DuplicateDetector)
+        4. Dependent Phase:
+           - Authority Routing (AuthorityProvider) — requires valid Location & Issue
+        5. Context Assembly & Complaint Generation (ComplaintGenerator).
         """
         request_id = str(uuid.uuid4())
         start_time = time.time()
+        providers_status: dict[str, str] = {}
+        provider_times_ms: dict[str, float] = {}
+        has_partial_failure = False
 
         logger.info(f"[{request_id}] Starting analysis for image: {request.image_url}")
 
         try:
-            # Step 1: Vision detection (Arpit)
+            # -------------------------------------------------------------
+            # Stage 1: Vision Detection (Critical)
+            # -------------------------------------------------------------
+            t0 = time.time()
             vision_result = await self._vision.detect(request.image_url)
+            provider_times_ms["vision"] = round((time.time() - t0) * 1000, 2)
+            providers_status["vision"] = vision_result.source
 
-            # --- Phase 3: Short-Circuit on No Civic Issue ---
+            # Phase 3: Short-Circuit on No Civic Issue
             if vision_result.classification_status == "no_civic_issue_detected":
                 logger.info(f"[{request_id}] No valid civic issue detected. Short-circuiting.")
                 elapsed_ms = (time.time() - start_time) * 1000
@@ -106,59 +127,159 @@ class DecisionEngine:
                         request_id=request_id,
                         processing_time_ms=elapsed_ms,
                         api_version="v1",
-                        providers={"vision": vision_result.source}
-                    )
+                        providers=providers_status,
+                    ),
                 )
 
-            # Step 2: Severity assessment (Arpit)
-            severity_result = await self._severity.assess(vision_result)
-
-            # Step 3: Location resolution (Arnav)
-            location_result = await self._location.resolve(
-                request.latitude, request.longitude
-            )
-
-            # Step 4: Authority routing (Arnav)
             primary_issue_type = (
                 vision_result.primary_issue.issue_class
                 if vision_result.primary_issue
                 else "unknown"
             )
-            authority_result = await self._authority.route(
-                primary_issue_type, location_result
+
+            # -------------------------------------------------------------
+            # Stage 2: Severity Assessment (Critical)
+            # -------------------------------------------------------------
+            t0 = time.time()
+            severity_result = await self._severity.assess(vision_result)
+            provider_times_ms["severity"] = round((time.time() - t0) * 1000, 2)
+            providers_status["severity"] = severity_result.source
+
+            # -------------------------------------------------------------
+            # Stage 3: Concurrent Execution (Location, RAG, Duplicate)
+            # -------------------------------------------------------------
+            # Define isolated helper tasks with explicit error handling so
+            # failure in one does not cancel or corrupt unrelated providers.
+            async def _run_location() -> LocationResult | None:
+                t_sub = time.time()
+                try:
+                    res = await self._location.resolve(request.latitude, request.longitude)
+                    provider_times_ms["location"] = round((time.time() - t_sub) * 1000, 2)
+                    providers_status["location"] = res.source
+                    return res
+                except Exception as exc:
+                    provider_times_ms["location"] = round((time.time() - t_sub) * 1000, 2)
+                    providers_status["location"] = "failed"
+                    logger.warning(f"[{request_id}] Location resolution failed: {exc}")
+                    return None
+
+            async def _run_rag() -> dict | None:
+                t_sub = time.time()
+                try:
+                    query = f"{primary_issue_type}"
+                    if request.user_description:
+                        query = f"{request.user_description} {query}"
+                    res = await self._rag.retrieve(query)
+                    provider_times_ms["rag"] = round((time.time() - t_sub) * 1000, 2)
+                    providers_status["rag"] = res.get("source", "unknown")
+                    return res
+                except Exception as exc:
+                    provider_times_ms["rag"] = round((time.time() - t_sub) * 1000, 2)
+                    providers_status["rag"] = "failed"
+                    logger.warning(f"[{request_id}] RAG retrieval failed: {exc}")
+                    return None
+
+            async def _run_duplicate() -> DuplicateResult | None:
+                t_sub = time.time()
+                try:
+                    res = await self._duplicate.check(
+                        issue_type=primary_issue_type,
+                        latitude=request.latitude,
+                        longitude=request.longitude,
+                        description=request.user_description,
+                        image_url=request.image_url,
+                    )
+                    provider_times_ms["duplicate"] = round((time.time() - t_sub) * 1000, 2)
+                    providers_status["duplicate"] = res.source
+                    return res
+                except Exception as exc:
+                    provider_times_ms["duplicate"] = round((time.time() - t_sub) * 1000, 2)
+                    providers_status["duplicate"] = "failed"
+                    logger.warning(f"[{request_id}] Duplicate check failed: {exc}")
+                    return None
+
+            # Execute independent operations concurrently
+            location_result, rag_result, duplicate_result = await asyncio.gather(
+                _run_location(),
+                _run_rag(),
+                _run_duplicate(),
             )
 
-            # Step 5: RAG retrieval (Arpit)
-            rag_query = f"{primary_issue_type} {location_result.city}"
-            if request.user_description:
-                rag_query = f"{request.user_description} {rag_query}"
-            rag_result = await self._rag.retrieve(rag_query)
+            if location_result is None or rag_result is None or duplicate_result is None:
+                has_partial_failure = True
 
-            # Step 6: Complaint generation (Arpit)
+            # -------------------------------------------------------------
+            # Stage 4: Dependent Authority Routing
+            # Requires resolved location information. If location resolution
+            # failed or is unavailable, authority routing MUST be skipped.
+            # -------------------------------------------------------------
+            authority_result: AuthorityResult | None = None
+            if location_result is not None:
+                t0 = time.time()
+                try:
+                    authority_result = await self._authority.route(
+                        primary_issue_type, location_result
+                    )
+                    provider_times_ms["authority"] = round((time.time() - t0) * 1000, 2)
+                    providers_status["authority"] = authority_result.source
+                except Exception as exc:
+                    provider_times_ms["authority"] = round((time.time() - t0) * 1000, 2)
+                    providers_status["authority"] = "failed"
+                    has_partial_failure = True
+                    logger.warning(f"[{request_id}] Authority routing failed: {exc}")
+                    authority_result = None
+            else:
+                logger.info(
+                    f"[{request_id}] Skipping authority routing because location resolution is unavailable"
+                )
+                providers_status["authority"] = "skipped_due_to_unresolved_location"
+                has_partial_failure = True
+
+            # -------------------------------------------------------------
+            # Stage 5: Context Assembly & Complaint Generation
+            # Assembles available outputs cleanly.
+            # -------------------------------------------------------------
+            address_str = location_result.address if location_result else "Unresolved Location"
+            city_str = location_result.city if location_result else "Unresolved City"
+            auth_name = (
+                authority_result.authority_name
+                if authority_result
+                else "Unassigned Authority"
+            )
+            dept_name = (
+                authority_result.department
+                if authority_result
+                else "General Civic Department"
+            )
+            rag_docs = rag_result.get("documents", []) if rag_result else []
+
             decision_context = {
                 "issue_type": primary_issue_type,
                 "severity_level": severity_result.level,
-                "address": location_result.address,
-                "city": location_result.city,
-                "authority_name": authority_result.authority_name,
-                "department": authority_result.department,
-                "rag_documents": rag_result.get("documents", []),
+                "address": address_str,
+                "city": city_str,
+                "authority_name": auth_name,
+                "department": dept_name,
+                "rag_documents": rag_docs,
                 "user_description": request.user_description or "",
             }
-            complaint_result = await self._complaint.generate(decision_context)
 
-            # Step 7: Duplicate check (Arnav)
-            duplicate_result = await self._duplicate.check(
-                issue_type=primary_issue_type,
-                latitude=request.latitude,
-                longitude=request.longitude,
-                description=request.user_description,
-                image_url=request.image_url,
-            )
+            complaint_result: ComplaintResult | None = None
+            t0 = time.time()
+            try:
+                complaint_result = await self._complaint.generate(decision_context)
+                provider_times_ms["complaint"] = round((time.time() - t0) * 1000, 2)
+                providers_status["complaint"] = complaint_result.source
+            except Exception as exc:
+                provider_times_ms["complaint"] = round((time.time() - t0) * 1000, 2)
+                providers_status["complaint"] = "failed"
+                has_partial_failure = True
+                logger.warning(f"[{request_id}] Complaint generation failed: {exc}")
 
             elapsed_ms = (time.time() - start_time) * 1000
 
-            # Build response
+            overall_status = "partial" if has_partial_failure else "completed"
+
             issue_info = IssueInfo(
                 type=primary_issue_type,
                 confidence=(
@@ -172,20 +293,12 @@ class DecisionEngine:
                 request_id=request_id,
                 processing_time_ms=elapsed_ms,
                 api_version="v1",
-                providers={
-                    "vision": vision_result.source,
-                    "severity": severity_result.source,
-                    "location": location_result.source,
-                    "authority": authority_result.source,
-                    "rag": rag_result.get("source", "unknown"),
-                    "complaint": complaint_result.source,
-                    "duplicate": duplicate_result.source,
-                },
+                providers=providers_status,
             )
 
             response = AnalysisResponse(
                 request_id=request_id,
-                status="completed",
+                status=overall_status,
                 issue=issue_info,
                 severity=severity_result,
                 location=location_result,
@@ -197,15 +310,16 @@ class DecisionEngine:
             )
 
             logger.info(
-                f"[{request_id}] Analysis completed in {elapsed_ms:.1f}ms — "
+                f"[{request_id}] Analysis finished in {elapsed_ms:.1f}ms (status={overall_status}) — "
                 f"issue={primary_issue_type}, severity={severity_result.level}"
             )
 
             return response
 
         except Exception as e:
-            logger.exception(f"[{request_id}] Analysis failed: {e}")
+            logger.exception(f"[{request_id}] Analysis pipeline failed: {e}")
             raise AIServiceError(
                 message=f"Analysis pipeline failed: {str(e)}",
                 details={"request_id": request_id},
             )
+
