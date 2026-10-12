@@ -15,7 +15,7 @@ from app.decision.engine import DecisionEngine
 # Person 1 providers (Arpit — replaced in Phases 2–7)
 from app.vision.detector import YOLODetector
 from app.severity.engine import SeverityEngine
-from app.rag.mock_retriever import MockRAGRetriever
+from app.rag.retriever import QdrantRAGRetriever
 from app.llm.mock_generator import MockComplaintGenerator
 
 # Person 2 mocks (Arnav — replaced when Arnav delivers)
@@ -39,10 +39,10 @@ def get_decision_engine() -> DecisionEngine:
         from app.vision.detector import YOLODetector
         vision = YOLODetector(model_path=settings.yolo_model_path)
     """
-    # Person 1 providers (mocks for now except vision)
+    # Person 1 providers (Arpit)
     vision = YOLODetector()
     severity = SeverityEngine()
-    rag = MockRAGRetriever()
+    rag = QdrantRAGRetriever()
     complaint = MockComplaintGenerator()
 
     # Person 2 providers (mocks until Arnav delivers)

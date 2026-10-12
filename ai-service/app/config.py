@@ -56,6 +56,15 @@ class Settings(BaseSettings):
     qdrant_collection: str = Field(
         default="civicsense_docs", description="Qdrant collection name"
     )
+    qdrant_in_memory: bool = Field(
+        default=True, description="Whether to use in-memory Qdrant client (for local/testing)"
+    )
+    rag_similarity_threshold: float = Field(
+        default=0.55, description="Minimum cosine similarity score to include a retrieved chunk"
+    )
+    rag_top_k: int = Field(
+        default=3, description="Maximum number of context documents to retrieve"
+    )
 
     # ----- Ollama (Phase 7) -----
     ollama_host: str = Field(default="localhost", description="Ollama server host")

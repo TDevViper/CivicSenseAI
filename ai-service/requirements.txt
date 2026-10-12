@@ -8,6 +8,10 @@
 #   Phase 7: ollama, transformers
 # =============================================================================
 
+# Phase 6: Vector Store & Embeddings (RAG)
+qdrant-client>=1.7.0
+sentence-transformers>=2.2.0
+
 # Core Framework
 fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
