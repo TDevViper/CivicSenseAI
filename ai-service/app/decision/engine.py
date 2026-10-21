@@ -260,6 +260,9 @@ class DecisionEngine:
                 "city": city_str,
                 "authority_name": auth_name,
                 "department": dept_name,
+                "contact_email": authority_result.contact_email if authority_result else None,
+                "contact_phone": authority_result.contact_phone if authority_result else None,
+                "office_address": authority_result.office_address if authority_result else None,
                 "rag_documents": rag_docs,
                 "user_description": request.user_description or "",
             }

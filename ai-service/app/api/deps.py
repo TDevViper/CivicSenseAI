@@ -16,7 +16,7 @@ from app.decision.engine import DecisionEngine
 from app.vision.detector import YOLODetector
 from app.severity.engine import SeverityEngine
 from app.rag.retriever import QdrantRAGRetriever
-from app.llm.mock_generator import MockComplaintGenerator
+from app.llm.generator import OllamaComplaintGenerator
 
 # Person 2 mocks (Arnav — replaced when Arnav delivers)
 from app.location.mock_provider import MockLocationProvider
@@ -43,7 +43,7 @@ def get_decision_engine() -> DecisionEngine:
     vision = YOLODetector()
     severity = SeverityEngine()
     rag = QdrantRAGRetriever()
-    complaint = MockComplaintGenerator()
+    complaint = OllamaComplaintGenerator()
 
     # Person 2 providers (mocks until Arnav delivers)
     location = MockLocationProvider()
