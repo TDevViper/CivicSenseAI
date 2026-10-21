@@ -12,6 +12,15 @@
 
 from pydantic import BaseModel, Field
 
+from app.contracts.location import LocationResult
+
+
+class AuthorityRouteRequest(BaseModel):
+    """Request payload for routing an issue to the responsible civic authority."""
+
+    issue_type: str = Field(..., min_length=1, description="Civic issue classification")
+    location: LocationResult = Field(..., description="Resolved geographic location context")
+
 
 class AuthorityResult(BaseModel):
     """

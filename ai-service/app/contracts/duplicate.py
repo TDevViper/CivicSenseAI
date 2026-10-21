@@ -9,6 +9,16 @@
 from pydantic import BaseModel, Field
 
 
+class DuplicateCheckRequest(BaseModel):
+    """Request payload for duplicate complaint checking."""
+
+    issue_type: str = Field(..., min_length=1, description="Civic issue category")
+    latitude: float = Field(..., ge=-90.0, le=90.0, description="GPS latitude")
+    longitude: float = Field(..., ge=-180.0, le=180.0, description="GPS longitude")
+    description: str | None = Field(default=None, description="Optional complaint text description")
+    image_url: str | None = Field(default=None, description="Optional image URL")
+
+
 class DuplicateResult(BaseModel):
     """
     Duplicate complaint detection result.

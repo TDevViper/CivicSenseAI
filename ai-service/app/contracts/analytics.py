@@ -11,6 +11,15 @@ from pydantic import BaseModel, Field
 from app.contracts.location import Coordinates
 
 
+class HotspotQueryRequest(BaseModel):
+    """Request payload for civic hotspot clustering."""
+
+    latitude: float = Field(..., ge=-90.0, le=90.0, description="Center latitude")
+    longitude: float = Field(..., ge=-180.0, le=180.0, description="Center longitude")
+    radius_km: float = Field(default=5.0, gt=0.0, le=100.0, description="Search radius in kilometers")
+    issue_type: str | None = Field(default=None, description="Optional issue type filter")
+
+
 class HotspotCluster(BaseModel):
     """A single geographic hotspot cluster."""
 
@@ -39,6 +48,14 @@ class HotspotResult(BaseModel):
         default="mock",
         description="Result source: 'mock' | 'dbscan_v1' | etc.",
     )
+
+
+class TrendQueryRequest(BaseModel):
+    """Request payload for civic trend analysis."""
+
+    issue_type: str = Field(..., min_length=1, description="Civic issue category to analyze")
+    region: str = Field(..., min_length=1, description="Geographic region name")
+    time_window_days: int = Field(default=30, ge=1, le=365, description="Time window in days")
 
 
 class TrendDataPoint(BaseModel):

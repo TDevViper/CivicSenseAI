@@ -16,6 +16,13 @@ class Coordinates(BaseModel):
     longitude: float = Field(..., ge=-180.0, le=180.0, description="Longitude")
 
 
+class LocationResolveRequest(BaseModel):
+    """Request payload for resolving GPS coordinates into structured location."""
+
+    latitude: float = Field(..., ge=-90.0, le=90.0, description="GPS latitude")
+    longitude: float = Field(..., ge=-180.0, le=180.0, description="GPS longitude")
+
+
 class LocationResult(BaseModel):
     """
     Location intelligence result — resolves GPS coordinates into
