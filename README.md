@@ -98,11 +98,14 @@ git clone https://github.com/arpit7799/CivicSenseAI.git
 cd CivicSenseAI
 
 # 2. Create virtual environment
-python3 -m venv civicsenseAI_env
+python3.10 -m venv civicsenseAI_env
 source civicsenseAI_env/bin/activate
 
-# 3. Install dependencies
+# 3. Install the lightweight API and test dependencies
 pip install -r ai-service/requirements.txt
+
+# Optional: install model dependencies for vision, RAG, and the full test suite
+# pip install -r ai-service/requirements-ai.txt
 
 # 4. Configure environment
 cp .env.example .env
@@ -113,12 +116,78 @@ cd ai-service
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 # 6. Test
+# Install requirements-ai.txt first to run all vision/RAG tests.
 pytest tests/ -v
 ```
+
+Use Python 3.10 or newer.
+
+The default `PROVIDER_MODE=mock` starts the API without downloading model weights.
+Set `PROVIDER_MODE=production` only after installing `requirements-ai.txt` and
+configuring the required model files and services. Person 2 civic-intelligence
+providers can be enabled independently with `LOCATION_PROVIDER`,
+`AUTHORITY_PROVIDER`, `DUPLICATE_PROVIDER`, and `ANALYTICS_PROVIDER` after their
+corresponding data sources are configured.
+
+Reverse geocoding is independently configured. Keep `LOCATION_PROVIDER=mock`
+for offline development; set it to `nominatim` to enable the opt-in Nominatim
+adapter. The public Nominatim service is limited to low-volume, user-triggered
+lookups and requires an identifying User-Agent, request spacing, caching, and
+OpenStreetMap attribution. Its result is the nearest suitable mapped object,
+so the returned address can differ from the exact coordinate. See the
+[Nominatim usage policy](https://operations.osmfoundation.org/policies/nominatim/)
+and [reverse API documentation](https://nominatim.org/release-docs/latest/api/Reverse/).
+The request limiter and cache are process-local; use one worker for this public
+endpoint or configure a provider suitable for multi-worker production traffic.
+
+Verified authority routing is also independently configured. Set
+`AUTHORITY_PROVIDER=verified_dataset` to use the sourced Gurugram starter record.
+It resolves to MCG's general civic grievance channel; the dataset deliberately
+leaves the issue-specific department unset because the source does not establish
+that mapping. Check the record's verification date and source before relying on
+it in a live deployment.
 
 ---
 
 ## API
+
+### Complaint index sync
+
+The main backend owns complaint records and syncs a read-only projection to the
+AI service. Configure a random `COMPLAINT_INDEX_API_KEY` and send it as a Bearer
+token to `POST /api/v1/complaint-index/upsert`. The default in-memory repository
+is for local development only and loses records on restart. For durable data,
+install `ai-service/requirements-db.txt`, set `COMPLAINT_REPOSITORY=postgres`,
+and apply `ai-service/migrations/001_complaint_index.sql` to a PostgreSQL
+database with PostGIS installed.
+
+Set `DUPLICATE_PROVIDER=engine` and `ANALYTICS_PROVIDER=engine` to use the
+complaint-index-backed duplicate, hotspot, and trend implementations. Their
+default remains mock mode until the application is syncing complaint records.
+
+Example request:
+
+```http
+POST /api/v1/complaint-index/upsert
+Authorization: Bearer <service-key>
+Content-Type: application/json
+
+{
+  "records": [
+    {
+      "complaint_id": "APP-123",
+      "issue_type": "pothole",
+      "reported_at": "2026-10-22T10:00:00Z",
+      "latitude": 28.4595,
+      "longitude": 77.0266,
+      "severity": "HIGH",
+      "description": "Large pothole near the market",
+      "city": "Gurugram",
+      "state": "Haryana"
+    }
+  ]
+}
+```
 
 ### Health Check
 ```
